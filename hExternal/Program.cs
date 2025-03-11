@@ -1,8 +1,12 @@
-﻿using System;
+﻿using hExternal.Modules;
+using hExternal.Features;
+using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Threading.Tasks;
 using ClickableTransparentOverlay;
 using ImGuiNET;
@@ -20,697 +24,975 @@ namespace hExternal
         static async Task Main(string[] args)
         {
             // Initialize the overlay renderer
-            Renderer renderer = new Renderer();
+            var renderer = new Renderer();
+
+            // Start the renderer
             await renderer.Start();
 
             // Start the cheat features in separate threads
-            Task.Run(() => AimbotThread(renderer));
-            Task.Run(() => BunnyhopThread());
-            Task.Run(() => FovChangerThread(renderer));
-            Task.Run(() => TriggerBotThread(renderer));
-            Task.Run(() => SkinChangerThread(renderer));  // New SkinChanger thread
+            Task.Run(() => Aimbot.AimbotThread(renderer));
+            Task.Run(() => BunnyHop.BunnyhopThread());
+            Task.Run(() => FOVChanger.FovChangerThread(renderer));
+            Task.Run(() => TriggerBot.TriggerBotThread(renderer));
+            Task.Run(() => SkinChanger.SkinChangerThread(renderer));
+
+            // Menu toggle thread using Insert key
+            Task.Run(() => MenuToggleThread(renderer));
 
             // Keep the main thread alive
             await Task.Delay(-1);
         }
 
-        // Aimbot thread
-        static void AimbotThread(Renderer renderer)
+        // Thread to monitor Insert key for menu toggle
+        static void MenuToggleThread(Renderer renderer)
         {
-            // Initialize game memory reader
-            Swed swed = new Swed("cs2");
-            IntPtr client = swed.GetModuleBase("client.dll");
-
-            const int HOTKEY = 0x05; // Mouse 5 for aimbot
-
-            List<Entity> entities = new List<Entity>();
-            Entity localPlayer = new Entity();
+            const int VK_INSERT = 0x2D; // Virtual key code for Insert key
+            bool keyPressed = false;
 
             while (true)
             {
+                // Check if Insert key is pressed
+                bool isKeyDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
+
+                // Toggle when key is pressed (not held)
+                if (isKeyDown && !keyPressed)
+                {
+                    renderer.showMenu = !renderer.showMenu;
+                    keyPressed = true;
+                }
+                else if (!isKeyDown)
+                {
+                    keyPressed = false;
+                }
+
+                // Small delay to prevent excessive CPU usage
+                Task.Delay(10).Wait();
+            }
+        }
+
+        // Renderer class
+        public class Renderer : Overlay
+        {
+            // Add menu toggle flag
+            public bool showMenu = true;
+
+            // Build date constant
+            private string buildDate = "Build Date: 3/10/2025 1:24 PM";
+
+            // State properties
+            public bool aimbotEnabled = false;
+            public bool aimOnTeam = false;
+            public float FOV = 50f;
+            public Vector4 circleColor = new Vector4(1, 1, 1, 1);
+
+            public bool triggerBotEnabled = false;
+            public bool bunnyhopEnabled = false;
+            public bool fovChangerEnabled = false;
+            public int fovValue = 110;
+
+            public bool visibilityCheck = true;
+            public bool aimAtHead = true;
+            public bool smoothAim = true;
+            public float smoothFactor = 5.0f;
+            public bool adjustScopedFOV = true;
+            public float scopedFOV = 20f;
+            public float scopedSmoothFactor = 2.0f;
+
+            // Skin Changer settings
+            public bool skinChangerEnabled = false;
+            public int selectedSkin = 0;
+            public int selectedWeapon = 0;
+            public float skinWear = 0.01f;
+            public int skinStatTrak = -1;
+            public bool skinApplyAll = false;
+            public string customName = "hExternal";
+
+            public Vector2 screenSize = new Vector2(1920, 1080);
+
+            // ImGui state tracking
+            private int activePage = 0; // 0 = Main, 1 = Settings
+            private int activeTab = 0;
+            private string[] mainTabLabels = new string[] { "Aimbot", "Trigger Bot", "Other Features" };
+            private string[] settingsTabLabels = new string[] { "Config" };
+            private int activeHeader = 0;
+            private string[] headerLabels = new string[] { "Main", "Settings", "About" };
+
+            // Config input/output
+            private string configName = "default";
+            private string statusMessage = "";
+            private bool showStatusMessage = false;
+            private float statusMessageTimer = 0f;
+            private Vector4 statusMessageColor = new Vector4(1.0f, 1.0f, 1.0f, 1.0f);
+            private string[] savedConfigs = new string[0];
+            private int selectedConfig = -1;
+
+            // Color definitions
+            private readonly Vector4 maroonColor = new Vector4(0.5f, 0.0f, 0.0f, 1.0f);
+            private readonly Vector4 maroonHoverColor = new Vector4(0.6f, 0.1f, 0.1f, 1.0f);
+            private readonly Vector4 maroonActiveColor = new Vector4(0.7f, 0.2f, 0.2f, 1.0f);
+            private readonly Vector4 backgroundColor = new Vector4(0.361f, 0.329f, 0.306f, 1.0f); // #5c544e
+            private readonly Vector4 childBgColor = new Vector4(0.302f, 0.275f, 0.255f, 1.0f); // Darker shade of #5c544e
+            private readonly Vector4 whiteTextColor = new Vector4(1.0f, 1.0f, 1.0f, 1.0f);
+            private readonly Vector4 greenStatusColor = new Vector4(0.0f, 1.0f, 0.0f, 1.0f);
+            private readonly Vector4 orangeVacColor = new Vector4(1.0f, 0.65f, 0.0f, 1.0f);
+            private readonly Vector4 redErrorColor = new Vector4(1.0f, 0.0f, 0.0f, 1.0f);
+            private readonly Vector4 greenSuccessColor = new Vector4(0.0f, 1.0f, 0.0f, 1.0f);
+
+            // Config class to serialize/deserialize settings
+            public class ConfigFile
+            {
+                // General
+                public bool AimbotEnabled { get; set; }
+                public bool AimOnTeam { get; set; }
+                public float FOV { get; set; }
+                public bool VisibilityCheck { get; set; }
+                public bool AimAtHead { get; set; }
+                public bool SmoothAim { get; set; }
+                public float SmoothFactor { get; set; }
+                public bool AdjustScopedFOV { get; set; }
+                public float ScopedFOV { get; set; }
+                public float ScopedSmoothFactor { get; set; }
+
+                // Other features
+                public bool TriggerBotEnabled { get; set; }
+                public bool BunnyhopEnabled { get; set; }
+                public bool FovChangerEnabled { get; set; }
+                public int FovValue { get; set; }
+
+                // Skin changer
+                public bool SkinChangerEnabled { get; set; }
+                public int SelectedSkin { get; set; }
+                public int SelectedWeapon { get; set; }
+                public float SkinWear { get; set; }
+                public int SkinStatTrak { get; set; }
+                public bool SkinApplyAll { get; set; }
+                public string CustomName { get; set; }
+            }
+
+            protected override void Render()
+            {
+                screenSize = ImGui.GetIO().DisplaySize;
+
+                // Set global style colors
+                SetImGuiStyle();
+
+                // Update status message timer
+                if (showStatusMessage)
+                {
+                    statusMessageTimer -= ImGui.GetIO().DeltaTime;
+                    if (statusMessageTimer <= 0)
+                    {
+                        showStatusMessage = false;
+                    }
+                }
+
+                // Draw overlay elements
+                DrawOverlay();
+
+                // Draw menu if enabled
+                if (showMenu)
+                {
+                    DrawMenu();
+                }
+            }
+
+            private void SetImGuiStyle()
+            {
+                ImGuiStylePtr style = ImGui.GetStyle();
+
+                // Set main colors
+                style.Colors[(int)ImGuiCol.WindowBg] = backgroundColor;
+                style.Colors[(int)ImGuiCol.ChildBg] = childBgColor;
+                style.Colors[(int)ImGuiCol.Text] = whiteTextColor;
+
+                // Set checkbox colors
+                style.Colors[(int)ImGuiCol.CheckMark] = whiteTextColor;
+                style.Colors[(int)ImGuiCol.FrameBg] = maroonColor;
+                style.Colors[(int)ImGuiCol.FrameBgHovered] = maroonHoverColor;
+                style.Colors[(int)ImGuiCol.FrameBgActive] = maroonActiveColor;
+
+                // Set slider colors
+                style.Colors[(int)ImGuiCol.SliderGrab] = maroonColor;
+                style.Colors[(int)ImGuiCol.SliderGrabActive] = maroonActiveColor;
+
+                // Set button colors
+                style.Colors[(int)ImGuiCol.Button] = maroonColor;
+                style.Colors[(int)ImGuiCol.ButtonHovered] = maroonHoverColor;
+                style.Colors[(int)ImGuiCol.ButtonActive] = maroonActiveColor;
+
+                // Set header colors
+                style.Colors[(int)ImGuiCol.Header] = maroonColor;
+                style.Colors[(int)ImGuiCol.HeaderHovered] = maroonHoverColor;
+                style.Colors[(int)ImGuiCol.HeaderActive] = maroonActiveColor;
+
+                // Set tab colors
+                style.Colors[(int)ImGuiCol.Tab] = maroonColor;
+                style.Colors[(int)ImGuiCol.TabHovered] = maroonHoverColor;
+                style.Colors[(int)ImGuiCol.TabActive] = maroonActiveColor;
+                style.Colors[(int)ImGuiCol.TabUnfocused] = new Vector4(0.4f, 0.0f, 0.0f, 0.8f);
+                style.Colors[(int)ImGuiCol.TabUnfocusedActive] = new Vector4(0.5f, 0.1f, 0.1f, 0.9f);
+
+                // Set border colors
+                style.Colors[(int)ImGuiCol.Border] = new Vector4(0.6f, 0.1f, 0.1f, 1.0f);
+                style.Colors[(int)ImGuiCol.BorderShadow] = new Vector4(0.0f, 0.0f, 0.0f, 0.0f);
+
+                // Set scrollbar colors
+                style.Colors[(int)ImGuiCol.ScrollbarBg] = new Vector4(0.2f, 0.2f, 0.2f, 1.0f);
+                style.Colors[(int)ImGuiCol.ScrollbarGrab] = maroonColor;
+                style.Colors[(int)ImGuiCol.ScrollbarGrabHovered] = maroonHoverColor;
+                style.Colors[(int)ImGuiCol.ScrollbarGrabActive] = maroonActiveColor;
+
+                // Set title colors
+                style.Colors[(int)ImGuiCol.TitleBg] = maroonColor;
+                style.Colors[(int)ImGuiCol.TitleBgActive] = maroonActiveColor;
+                style.Colors[(int)ImGuiCol.TitleBgCollapsed] = new Vector4(0.3f, 0.0f, 0.0f, 0.5f);
+
+                // Set separator colors
+                style.Colors[(int)ImGuiCol.Separator] = new Vector4(0.6f, 0.1f, 0.1f, 1.0f);
+                style.Colors[(int)ImGuiCol.SeparatorHovered] = new Vector4(0.7f, 0.2f, 0.2f, 1.0f);
+                style.Colors[(int)ImGuiCol.SeparatorActive] = new Vector4(0.8f, 0.3f, 0.3f, 1.0f);
+
+                // Hide resize grips (removes pull tab in bottom left)
+                style.Colors[(int)ImGuiCol.ResizeGrip] = new Vector4(0, 0, 0, 0);
+                style.Colors[(int)ImGuiCol.ResizeGripHovered] = new Vector4(0, 0, 0, 0);
+                style.Colors[(int)ImGuiCol.ResizeGripActive] = new Vector4(0, 0, 0, 0);
+            }
+
+            private void DrawMenu()
+            {
+                // Set window position to top left corner with padding
+                ImGui.SetNextWindowPos(new Vector2(10, 10), ImGuiCond.FirstUseEver);
+                ImGui.SetNextWindowSize(new Vector2(450, 600), ImGuiCond.FirstUseEver);
+
+                // Begin main window with NoResize flag to remove the resize grip/pull tab
+                ImGuiWindowFlags windowFlags = ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoResize;
+                if (ImGui.Begin("hExternal", ref showMenu, windowFlags))
+                {
+                    // Top navigation bar (headers) - without scrollbars while keeping hExternal text
+                    if (ImGui.BeginChild("HeaderBar", new Vector2(0, 30), ImGuiChildFlags.Border | ImGuiChildFlags.AlwaysUseWindowPadding, ImGuiWindowFlags.NoScrollbar))
+                    {
+                        // Display logo or icon
+                        ImGui.Text("hExternal");
+                        ImGui.SameLine(150);
+
+                        // Header buttons
+                        for (int i = 0; i < headerLabels.Length; i++)
+                        {
+                            if (i > 0) ImGui.SameLine();
+                            ImGui.PushStyleColor(ImGuiCol.Text, activeHeader == i ? whiteTextColor : new Vector4(0.7f, 0.7f, 0.7f, 1));
+                            if (ImGui.Button(headerLabels[i], new Vector2(80, 20)))
+                            {
+                                activeHeader = i;
+
+                                // Set active page based on header selection
+                                if (i == 0) // Main
+                                {
+                                    activePage = 0;
+                                }
+                                else if (i == 1) // Settings
+                                {
+                                    activePage = 1;
+                                }
+                                // About would be case 2
+                            }
+                            ImGui.PopStyleColor();
+                        }
+                    }
+                    ImGui.EndChild();
+
+                    // Display status message if active
+                    if (showStatusMessage)
+                    {
+                        ImGui.PushStyleColor(ImGuiCol.Text, statusMessageColor);
+                        ImGui.TextWrapped(statusMessage);
+                        ImGui.PopStyleColor();
+                        ImGui.Separator();
+                    }
+
+                    // Display content based on active page
+                    if (activePage == 0) // Main
+                    {
+                        DrawMainPage();
+                    }
+                    else if (activePage == 1) // Settings
+                    {
+                        DrawSettingsPage();
+                    }
+                    // Add other pages as needed (About, etc.)
+
+                    // Status footer
+                    ImGui.Separator();
+
+                    // Use original green color for STATUS: RUNNING
+                    ImGui.PushStyleColor(ImGuiCol.Text, greenStatusColor);
+                    ImGui.Text("STATUS: RUNNING");
+                    ImGui.PopStyleColor();
+
+                    ImGui.SameLine(ImGui.GetWindowWidth() - 150);
+
+                    // Use original orange color for VAC STATUS
+                    ImGui.PushStyleColor(ImGuiCol.Text, orangeVacColor);
+                    ImGui.Text("VAC STATUS: UNTESTED");
+                    ImGui.PopStyleColor();
+
+                    // White for the rest of the text
+                    ImGui.Text("Press INSERT to toggle menu visibility");
+                }
+                ImGui.End();
+            }
+
+            private void DrawMainPage()
+            {
+                // Tab bar for Main page
+                if (ImGui.BeginTabBar("MainTabBar"))
+                {
+                    if (ImGui.BeginTabItem(mainTabLabels[0])) // Aimbot
+                    {
+                        activeTab = 0;
+                        DrawAimbotTab();
+                        ImGui.EndTabItem();
+                    }
+
+                    if (ImGui.BeginTabItem(mainTabLabels[1])) // Trigger Bot
+                    {
+                        activeTab = 1;
+                        DrawTriggerBotTab();
+                        ImGui.EndTabItem();
+                    }
+
+                    if (ImGui.BeginTabItem(mainTabLabels[2])) // Other Features
+                    {
+                        activeTab = 2;
+                        DrawOtherFeaturesTab();
+                        ImGui.EndTabItem();
+                    }
+                    ImGui.EndTabBar();
+                }
+            }
+
+            private void DrawSettingsPage()
+            {
+                // Tab bar for Settings page
+                if (ImGui.BeginTabBar("SettingsTabBar"))
+                {
+                    if (ImGui.BeginTabItem(settingsTabLabels[0])) // Config
+                    {
+                        DrawConfigTab();
+                        ImGui.EndTabItem();
+                    }
+                    // You can add more settings tabs here
+                    ImGui.EndTabBar();
+                }
+            }
+
+            private void DrawAimbotTab()
+            {
+                ImGui.Spacing();
+
+                bool temp = aimbotEnabled;
+                if (ImGui.Checkbox("Enable Aimbot", ref temp))
+                {
+                    aimbotEnabled = temp;
+                }
+
+                temp = aimOnTeam;
+                if (ImGui.Checkbox("Aim on teammates", ref temp))
+                {
+                    aimOnTeam = temp;
+                }
+
+                // FOV Slider
+                ImGui.PushItemWidth(ImGui.GetWindowWidth() - 100);
+                float tempFOV = FOV;
+                ImGui.Text("FOV: " + tempFOV.ToString("0"));
+                if (ImGui.SliderFloat("##FOV", ref tempFOV, 10, 300, ""))
+                {
+                    FOV = tempFOV;
+                }
+                ImGui.PopItemWidth();
+
+                // Activation info
+                ImGui.Spacing();
+                if (ImGui.BeginChild("Activation", new Vector2(ImGui.GetWindowWidth() - 16, 30), ImGuiChildFlags.Border, ImGuiWindowFlags.NoScrollbar))
+                {
+                    ImGui.Text("Activation: Mouse 5 (Side button)");
+                }
+                ImGui.EndChild();
+
+                // Advanced Settings
+                ImGui.Spacing();
+                if (ImGui.BeginChild("Advanced", new Vector2(ImGui.GetWindowWidth() - 16, 150), ImGuiChildFlags.Border))
+                {
+                    ImGui.PushFont(ImGui.GetFont()); // You can use a different font if available
+                    ImGui.Text("Advanced Settings");
+                    ImGui.PopFont();
+                    ImGui.Separator();
+
+                    temp = visibilityCheck;
+                    if (ImGui.Checkbox("Visibility Check (No Wall Bang)", ref temp))
+                    {
+                        visibilityCheck = temp;
+                    }
+
+                    temp = aimAtHead;
+                    if (ImGui.Checkbox("Aim at Head", ref temp))
+                    {
+                        aimAtHead = temp;
+                    }
+
+                    // Smoothing Factor slider
+                    ImGui.PushItemWidth(ImGui.GetWindowWidth() - 130);
+                    float tempSmooth = smoothFactor;
+                    ImGui.Text("Smoothing Factor: " + tempSmooth.ToString("0") + "%");
+                    if (ImGui.SliderFloat("##Smooth", ref tempSmooth, 0, 100, ""))
+                    {
+                        smoothFactor = tempSmooth;
+                    }
+                    ImGui.PopItemWidth();
+                }
+                ImGui.EndChild();
+            }
+
+            private void DrawTriggerBotTab()
+            {
+                ImGui.Spacing();
+
+                // Trigger Bot Settings
+                if (ImGui.BeginChild("TriggerBotSettings", new Vector2(ImGui.GetWindowWidth() - 16, 300), ImGuiChildFlags.Border))
+                {
+                    ImGui.PushFont(ImGui.GetFont());
+                    ImGui.Text("Trigger Bot Settings");
+                    ImGui.PopFont();
+                    ImGui.Separator();
+
+                    bool temp = triggerBotEnabled;
+                    if (ImGui.Checkbox("Enable Trigger Bot", ref temp))
+                    {
+                        triggerBotEnabled = temp;
+                    }
+
+                    ImGui.Spacing();
+                    ImGui.Text("Activation: Mouse 4 (Side button)");
+
+                    ImGui.Spacing();
+                    ImGui.Separator();
+                    ImGui.Spacing();
+
+                    // Additional TriggerBot settings can be added here
+                    bool tempVisCheck = visibilityCheck;
+                    if (ImGui.Checkbox("Visibility Check (No Wall Bang)", ref tempVisCheck))
+                    {
+                        visibilityCheck = tempVisCheck;
+                    }
+
+                    // Add delay slider (new setting for TriggerBot)
+                    ImGui.PushItemWidth(ImGui.GetWindowWidth() - 130);
+                    float tempDelay = 10.0f; // Default value, add this as a class variable
+                    ImGui.Text("Trigger Delay: " + tempDelay.ToString("0") + "ms");
+                    if (ImGui.SliderFloat("##TriggerDelay", ref tempDelay, 0, 200, ""))
+                    {
+                        // Here you would set the trigger delay class variable
+                        // triggerDelay = tempDelay;
+                    }
+                    ImGui.PopItemWidth();
+
+                    ImGui.Spacing();
+
+                    // Team options
+                    bool tempTeamCheck = !aimOnTeam; // Inverse of aim on team
+                    if (ImGui.Checkbox("Don't trigger on teammates", ref tempTeamCheck))
+                    {
+                        aimOnTeam = !tempTeamCheck;
+                    }
+                }
+                ImGui.EndChild();
+            }
+
+            private void DrawOtherFeaturesTab()
+            {
+                ImGui.Spacing();
+
+                // Bunny Hop Section
+                if (ImGui.BeginChild("BunnyHop", new Vector2(ImGui.GetWindowWidth() - 16, 80), ImGuiChildFlags.Border, ImGuiWindowFlags.NoScrollbar))
+                {
+                    ImGui.PushFont(ImGui.GetFont());
+                    ImGui.Text("Bunny Hop");
+                    ImGui.PopFont();
+                    ImGui.Separator();
+
+                    bool temp = bunnyhopEnabled;
+                    if (ImGui.Checkbox("Enable Bunny Hop", ref temp))
+                    {
+                        bunnyhopEnabled = temp;
+                    }
+
+                    ImGui.Text("Activation: Spacebar");
+                }
+                ImGui.EndChild();
+
+                ImGui.Spacing();
+
+                // FOV Changer Section
+                if (ImGui.BeginChild("FOVChanger", new Vector2(ImGui.GetWindowWidth() - 16, 120), ImGuiChildFlags.Border, ImGuiWindowFlags.NoScrollbar))
+                {
+                    ImGui.PushFont(ImGui.GetFont());
+                    ImGui.Text("FOV Changer");
+                    ImGui.PopFont();
+                    ImGui.Separator();
+
+                    bool temp = fovChangerEnabled;
+                    if (ImGui.Checkbox("Enable FOV Changer", ref temp))
+                    {
+                        fovChangerEnabled = temp;
+                    }
+
+                    // FOV slider with better layout
+                    ImGui.PushItemWidth(ImGui.GetWindowWidth() - 100);
+                    int tempFOV = fovValue;
+                    ImGui.Text("FOV Value: " + tempFOV.ToString());
+                    if (ImGui.SliderInt("##FOVValue", ref tempFOV, 60, 140))
+                    {
+                        fovValue = tempFOV;
+                    }
+                    ImGui.PopItemWidth();
+
+                    ImGui.Text("Changes in-game field of view");
+                }
+                ImGui.EndChild();
+
+                ImGui.Spacing();
+
+                // Skin Changer Section
+                if (ImGui.BeginChild("SkinChanger", new Vector2(ImGui.GetWindowWidth() - 16, 200), ImGuiChildFlags.Border, ImGuiWindowFlags.NoScrollbar))
+                {
+                    ImGui.PushFont(ImGui.GetFont());
+                    ImGui.Text("Skin Changer");
+                    ImGui.PopFont();
+                    ImGui.Separator();
+
+                    bool temp = skinChangerEnabled;
+                    if (ImGui.Checkbox("Enable Skin Changer", ref temp))
+                    {
+                        skinChangerEnabled = temp;
+                    }
+
+                    // Add skin selection options
+                    ImGui.Text("Weapon:");
+                    ImGui.SameLine(100);
+                    ImGui.PushItemWidth(ImGui.GetWindowWidth() - 110);
+                    int tempWeapon = selectedWeapon;
+                    string[] weapons = new string[] { "AK-47", "M4A4", "AWP", "Desert Eagle", "USP-S" };
+                    if (ImGui.Combo("##WeaponSelect", ref tempWeapon, weapons, weapons.Length))
+                    {
+                        selectedWeapon = tempWeapon;
+                    }
+
+                    ImGui.Text("Skin:");
+                    ImGui.SameLine(100);
+                    int tempSkin = selectedSkin;
+                    string[] skins = new string[] { "Default", "Asiimov", "Dragon Lore", "Hyper Beast", "Neo-Noir", "Fade" };
+                    if (ImGui.Combo("##SkinSelect", ref tempSkin, skins, skins.Length))
+                    {
+                        selectedSkin = tempSkin;
+                    }
+
+                    // Wear slider
+                    ImGui.Text("Wear:");
+                    ImGui.SameLine(100);
+                    float tempWear = skinWear;
+                    if (ImGui.SliderFloat("##SkinWear", ref tempWear, 0.0f, 1.0f, "%.2f"))
+                    {
+                        skinWear = tempWear;
+                    }
+                    ImGui.PopItemWidth();
+
+                    // Checkbox for Apply to All
+                    bool tempApplyAll = skinApplyAll;
+                    if (ImGui.Checkbox("Apply to all weapons", ref tempApplyAll))
+                    {
+                        skinApplyAll = tempApplyAll;
+                    }
+
+                    // Apply Changes button
+                    if (ImGui.Button("Apply Skin Changes", new Vector2(180, 25)))
+                    {
+                        // Functionality would be implemented in SkinChanger class
+                    }
+                }
+                ImGui.EndChild();
+
+            ImGui.Spacing();
+
+                // Skin Changer Section
+                if (ImGui.BeginChild("SkinChanger", new Vector2(ImGui.GetWindowWidth() - 16, 100), ImGuiChildFlags.Border, ImGuiWindowFlags.NoScrollbar))
+                {
+                    ImGui.PushFont(ImGui.GetFont());
+                    ImGui.Text("Skin Changer (DO NOT ENABLE CURRENTLY BROKEN)");
+                    ImGui.PopFont();
+                    ImGui.Separator();
+
+                    bool temp = skinChangerEnabled;
+                    if (ImGui.Checkbox("Enable Skin Changer", ref temp))
+                    {
+                        skinChangerEnabled = temp;
+                    }
+
+                    if (ImGui.Button("Skin Changer Options", new Vector2(180, 25)))
+                    {
+                        // Functionality for skin changer options can be added here
+                    }
+                }
+                ImGui.EndChild();
+            }
+
+            private void DrawConfigTab()
+            {
+                ImGui.Spacing();
+
+                // Config Section - Now part of the Config tab in Settings page
+                if (ImGui.BeginChild("ConfigSection", new Vector2(ImGui.GetWindowWidth() - 16, 500), ImGuiChildFlags.Border))
+                {
+                    ImGui.PushFont(ImGui.GetFont());
+                    ImGui.Text("Configuration Settings");
+                    ImGui.PopFont();
+                    ImGui.Separator();
+
+                    // Config name input
+                    ImGui.Text("Config Name:");
+                    ImGui.SameLine();
+
+                    // Create a buffer with the current config name
+                    byte[] configNameBuffer = new byte[128];
+                    System.Text.Encoding.UTF8.GetBytes(configName).CopyTo(configNameBuffer, 0);
+
+                    // Use InputText with byte array (works with ImGui.NET)
+                    if (ImGui.InputText("##ConfigName", configNameBuffer, 128))
+                    {
+                        // Convert back to string, handling null termination
+                        configName = System.Text.Encoding.UTF8.GetString(configNameBuffer)
+                            .TrimEnd('\0');
+                    }
+
+                    ImGui.Spacing();
+
+                    // Save Config Button
+                    if (ImGui.Button("Save Config", new Vector2(ImGui.GetWindowWidth() / 2 - 10, 30)))
+                    {
+                        SaveConfig(configName);
+                    }
+
+                    ImGui.SameLine();
+
+                    // Refresh Config List Button
+                    if (ImGui.Button("Refresh List", new Vector2(ImGui.GetWindowWidth() / 2 - 10, 30)))
+                    {
+                        RefreshConfigList();
+                    }
+
+                    ImGui.Spacing();
+                    ImGui.Separator();
+                    ImGui.Spacing();
+
+                    // Load Config Section
+                    ImGui.Text("Load Configuration");
+                    ImGui.Spacing();
+
+                    // Config List
+                    if (savedConfigs.Length == 0)
+                    {
+                        ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 1.0f), "No saved configs found. Save a config first.");
+                    }
+                    else
+                    {
+                        // Create a list box with all saved configs
+                        if (ImGui.BeginListBox("##ConfigList", new Vector2(ImGui.GetWindowWidth() - 30, 250)))
+                        {
+                            for (int i = 0; i < savedConfigs.Length; i++)
+                            {
+                                string configFileName = savedConfigs[i];
+                                bool isSelected = (selectedConfig == i);
+                                if (ImGui.Selectable(configFileName, isSelected))
+                                {
+                                    selectedConfig = i;
+                                }
+
+                                if (isSelected)
+                                {
+                                    ImGui.SetItemDefaultFocus();
+                                }
+                            }
+                            ImGui.EndListBox();
+                        }
+
+                        ImGui.Spacing();
+
+                        // Load and Delete buttons
+                        if (selectedConfig >= 0 && selectedConfig < savedConfigs.Length)
+                        {
+                            if (ImGui.Button("Load Selected Config", new Vector2(ImGui.GetWindowWidth() / 2 - 10, 30)))
+                            {
+                                LoadConfig(savedConfigs[selectedConfig]);
+                            }
+
+                            ImGui.SameLine();
+
+                            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.8f, 0.2f, 0.2f, 1.0f));
+                            if (ImGui.Button("Delete Selected Config", new Vector2(ImGui.GetWindowWidth() / 2 - 10, 30)))
+                            {
+                                DeleteConfig(savedConfigs[selectedConfig]);
+                            }
+                            ImGui.PopStyleColor();
+                        }
+                        else
+                        {
+                            ImGui.TextColored(new Vector4(0.7f, 0.7f, 0.7f, 1.0f), "Select a config to load or delete.");
+                        }
+                    }
+                }
+                ImGui.EndChild();
+            }
+
+            private string GetConfigFolderPath()
+            {
+                // Get the Documents folder path for the current user
+                string documentsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+
+                // Create hExternal configs directory if it doesn't exist
+                string configFolder = Path.Combine(documentsPath, "hExternal");
+                if (!Directory.Exists(configFolder))
+                {
+                    Directory.CreateDirectory(configFolder);
+                }
+
+                return configFolder;
+            }
+
+            private void SaveConfig(string configName)
+            {
                 try
                 {
-                    if (!renderer.aimbotEnabled)
+                    // Sanitize config name - replace invalid characters with underscores
+                    string safeConfigName = string.Join("_", configName.Split(Path.GetInvalidFileNameChars()));
+
+                    // If empty, use default
+                    if (string.IsNullOrWhiteSpace(safeConfigName))
                     {
-                        Thread.Sleep(100);
-                        continue;
+                        safeConfigName = "default";
                     }
 
-                    entities.Clear();
-
-                    // Get entity list
-                    IntPtr entityList = swed.ReadPointer(client, Offsets.dwEntityList);
-                    IntPtr listEntry = swed.ReadPointer(entityList, 0x10);
-
-                    // Update local player information
-                    localPlayer.pawnAddress = swed.ReadPointer(client, Offsets.dwLocalPlayerPawn);
-                    localPlayer.team = swed.ReadInt(localPlayer.pawnAddress, Offsets.m_iTeamNum);
-                    localPlayer.origin = swed.ReadVec(localPlayer.pawnAddress, Offsets.m_vOldOrigin);
-                    localPlayer.view = swed.ReadVec(localPlayer.pawnAddress, Offsets.m_vecViewOffset);
-
-                    // Loop through entity list
-                    for (int i = 0; i < 64; i++)
+                    // Create config object with current settings
+                    ConfigFile config = new ConfigFile
                     {
-                        if (listEntry == IntPtr.Zero)
-                            continue;
+                        // General
+                        AimbotEnabled = aimbotEnabled,
+                        AimOnTeam = aimOnTeam,
+                        FOV = FOV,
+                        VisibilityCheck = visibilityCheck,
+                        AimAtHead = aimAtHead,
+                        SmoothAim = smoothAim,
+                        SmoothFactor = smoothFactor,
+                        AdjustScopedFOV = adjustScopedFOV,
+                        ScopedFOV = scopedFOV,
+                        ScopedSmoothFactor = scopedSmoothFactor,
 
-                        IntPtr currentController = swed.ReadPointer(listEntry, i * 0x78);
+                        // Other features
+                        TriggerBotEnabled = triggerBotEnabled,
+                        BunnyhopEnabled = bunnyhopEnabled,
+                        FovChangerEnabled = fovChangerEnabled,
+                        FovValue = fovValue,
 
-                        if (currentController == IntPtr.Zero)
-                            continue;
+                        // Skin changer
+                        SkinChangerEnabled = skinChangerEnabled,
+                        SelectedSkin = selectedSkin,
+                        SelectedWeapon = selectedWeapon,
+                        SkinWear = skinWear,
+                        SkinStatTrak = skinStatTrak,
+                        SkinApplyAll = skinApplyAll,
+                        CustomName = customName
+                    };
 
-                        int pawnHandle = swed.ReadInt(currentController, Offsets.m_hPlayerPawn);
+                    // Serialize the config object
+                    string json = JsonSerializer.Serialize(config, new JsonSerializerOptions
+                    {
+                        WriteIndented = true
+                    });
 
-                        if (pawnHandle == 0)
-                            continue;
+                    // Get config folder path and ensure it exists
+                    string configFolder = GetConfigFolderPath();
+                    string filePath = Path.Combine(configFolder, $"{safeConfigName}.json");
 
-                        // Next entry
-                        IntPtr listEntry2 = swed.ReadPointer(entityList, 0x8 * ((pawnHandle & 0x7FFF) >> 9) + 0x10);
-                        IntPtr currentPawn = swed.ReadPointer(listEntry2, 0x78 * (pawnHandle & 0x1FF));
+                    // Write the JSON to file
+                    File.WriteAllText(filePath, json);
 
-                        if (currentPawn == localPlayer.pawnAddress)
-                            continue;
+                    // Show success message
+                    ShowStatusMessage($"Configuration saved to {filePath}", greenSuccessColor);
 
-                        // Get pawn attributes
-                        int health = swed.ReadInt(currentPawn, Offsets.m_iHealth);
-                        int team = swed.ReadInt(currentPawn, Offsets.m_iTeamNum);
-                        uint lifeState = swed.ReadUInt(currentPawn, Offsets.m_lifeState);
+                    // Refresh the config list
+                    RefreshConfigList();
+                }
+                catch (Exception ex)
+                {
+                    ShowStatusMessage($"Failed to save config: {ex.Message}", redErrorColor);
+                }
+            }
 
-                        if (lifeState != 256)
-                            continue;
+            private void LoadConfig(string configFileName)
+            {
+                try
+                {
+                    string configFolder = GetConfigFolderPath();
+                    string filePath = Path.Combine(configFolder, configFileName);
 
-                        if (team == localPlayer.team && !renderer.aimOnTeam)
-                            continue;
-
-                        Entity entity = new Entity
-                        {
-                            pawnAddress = currentPawn,
-                            controllerAddress = currentController,
-                            health = health,
-                            team = team,
-                            lifeState = lifeState,
-                            origin = swed.ReadVec(currentPawn, Offsets.m_vOldOrigin),
-                            view = swed.ReadVec(currentPawn, Offsets.m_vecViewOffset)
-                        };
-
-                        // Add head position
-                        IntPtr gameSceneNode = swed.ReadPointer(currentPawn, Offsets.m_pGameSceneNode);
-                        entity.head = Vector3.Add(entity.origin, new Vector3(0, 0, 75)); // Approximate head position
-                        entity.distance = Vector3.Distance(entity.origin, localPlayer.origin);
-
-                        // Calculate 2D screen position
-                        ViewMatrix viewMatrix = ReadMatrix(swed, client + Offsets.dwViewMatrix);
-                        entity.head2d = Calculate.WorldToScreen(viewMatrix, entity.head, (int)renderer.screenSize.X, (int)renderer.screenSize.Y);
-                        entity.pixelDistance = Vector2.Distance(entity.head2d, new Vector2(renderer.screenSize.X / 2, renderer.screenSize.Y / 2));
-
-                        entities.Add(entity);
+                    if (!File.Exists(filePath))
+                    {
+                        ShowStatusMessage($"Config file not found: {filePath}", redErrorColor);
+                        return;
                     }
 
-                    // Sort entities by distance from crosshair
-                    entities = entities.OrderBy(o => o.pixelDistance).ToList();
+                    // Read and deserialize the config file
+                    string json = File.ReadAllText(filePath);
+                    ConfigFile config = JsonSerializer.Deserialize<ConfigFile>(json);
 
-                    // Apply aimbot if enabled and key pressed
-                    if (entities.Count > 0 && GetAsyncKeyState(HOTKEY) < 0 && renderer.aimbotEnabled)
+                    // Apply the loaded settings
+                    // General
+                    aimbotEnabled = config.AimbotEnabled;
+                    aimOnTeam = config.AimOnTeam;
+                    FOV = config.FOV;
+                    visibilityCheck = config.VisibilityCheck;
+                    aimAtHead = config.AimAtHead;
+                    smoothAim = config.SmoothAim;
+                    smoothFactor = config.SmoothFactor;
+                    adjustScopedFOV = config.AdjustScopedFOV;
+                    scopedFOV = config.ScopedFOV;
+                    scopedSmoothFactor = config.ScopedSmoothFactor;
+
+                    // Other features
+                    triggerBotEnabled = config.TriggerBotEnabled;
+                    bunnyhopEnabled = config.BunnyhopEnabled;
+                    fovChangerEnabled = config.FovChangerEnabled;
+                    fovValue = config.FovValue;
+
+                    // Skin changer
+                    skinChangerEnabled = config.SkinChangerEnabled;
+                    selectedSkin = config.SelectedSkin;
+                    selectedWeapon = config.SelectedWeapon;
+                    skinWear = config.SkinWear;
+                    skinStatTrak = config.SkinStatTrak;
+                    skinApplyAll = config.SkinApplyAll;
+                    customName = config.CustomName;
+
+                    // Update UI with the loaded config name
+                    configName = Path.GetFileNameWithoutExtension(configFileName);
+
+                    // Show success message
+                    ShowStatusMessage($"Configuration loaded from {filePath}", greenSuccessColor);
+                }
+                catch (Exception ex)
+                {
+                    ShowStatusMessage($"Failed to load config: {ex.Message}", redErrorColor);
+                }
+            }
+
+            private void DeleteConfig(string configFileName)
+            {
+                try
+                {
+                    string configFolder = GetConfigFolderPath();
+                    string filePath = Path.Combine(configFolder, configFileName);
+
+                    if (!File.Exists(filePath))
                     {
-                        Vector3 playerView = Vector3.Add(localPlayer.origin, localPlayer.view);
-                        Vector3 entityView = Vector3.Add(entities[0].origin, entities[0].view);
+                        ShowStatusMessage($"Config file not found: {filePath}", redErrorColor);
+                        return;
+                    }
 
-                        // Check if target is within FOV
-                        if (entities[0].pixelDistance < renderer.FOV)
-                        {
-                            Vector2 newAngles = Calculate.CalculateAngles(playerView, entityView);
-                            Vector3 newAnglesVec3 = new Vector3(newAngles.Y, newAngles.X, 0.0f);
+                    // Delete the file
+                    File.Delete(filePath);
 
-                            // Apply aim
-                            swed.WriteVec(client, Offsets.dwViewAngles, newAnglesVec3);
-                        }
+                    // Reset selected config
+                    selectedConfig = -1;
+
+                    // Show success message
+                    ShowStatusMessage($"Configuration {configFileName} deleted", greenSuccessColor);
+
+                    // Refresh the config list
+                    RefreshConfigList();
+                }
+                catch (Exception ex)
+                {
+                    ShowStatusMessage($"Failed to delete config: {ex.Message}", redErrorColor);
+                }
+            }
+
+            private void RefreshConfigList()
+            {
+                try
+                {
+                    string configFolder = GetConfigFolderPath();
+
+                    // Get all JSON files in the config folder
+                    string[] files = Directory.GetFiles(configFolder, "*.json");
+
+                    // Extract just the file names
+                    savedConfigs = files.Select(Path.GetFileName).ToArray();
+
+                    // Reset selection if it's invalid
+                    if (selectedConfig >= savedConfigs.Length)
+                    {
+                        selectedConfig = -1;
                     }
                 }
                 catch (Exception ex)
                 {
-                    // Silently handle exceptions to keep thread alive
+                    ShowStatusMessage($"Failed to refresh config list: {ex.Message}", redErrorColor);
+                    savedConfigs = new string[0];
                 }
-
-                Thread.Sleep(10);
             }
-        }
 
-        static ViewMatrix ReadMatrix(Swed swed, IntPtr matrixAddress)
-        {
-            var viewMatrix = new ViewMatrix();
-            var matrix = swed.ReadMatrix(matrixAddress);
-
-            viewMatrix.m11 = matrix[0];
-            viewMatrix.m12 = matrix[1];
-            viewMatrix.m13 = matrix[2];
-            viewMatrix.m14 = matrix[3];
-
-            viewMatrix.m21 = matrix[4];
-            viewMatrix.m22 = matrix[5];
-            viewMatrix.m23 = matrix[6];
-            viewMatrix.m24 = matrix[7];
-
-            viewMatrix.m31 = matrix[8];
-            viewMatrix.m32 = matrix[9];
-            viewMatrix.m33 = matrix[10];
-            viewMatrix.m34 = matrix[11];
-
-            viewMatrix.m41 = matrix[12];
-            viewMatrix.m42 = matrix[13];
-            viewMatrix.m43 = matrix[14];
-            viewMatrix.m44 = matrix[15];
-
-            return viewMatrix;
-        }
-
-        // Bunny hop thread
-        static void BunnyhopThread()
-        {
-            Swed swed = new Swed("cs2");
-            IntPtr client = swed.GetModuleBase("client.dll");
-
-            // Constants
-            const int SPACE_BAR = 0x20;
-            const uint STANDING = 65665;
-            const uint CROUCHED = 65667;
-            const uint pJump = 65537; // +jump
-            const uint mJump = 16777472; // -jump
-
-            // Force jump offset
-            IntPtr forceJump = client + 0x1883C30;
-
-            while (true)
+            private void ShowStatusMessage(string message, Vector4 color)
             {
-                try
-                {
-                    IntPtr playerPawnAddress = swed.ReadPointer(client, Offsets.dwLocalPlayerPawn);
-                    uint fFlag = swed.ReadUInt(playerPawnAddress, 0x3EC);
-
-                    if (GetAsyncKeyState(SPACE_BAR) < 0)
-                    {
-                        if (fFlag == STANDING || fFlag == CROUCHED) // Grounded
-                        {
-                            Thread.Sleep(1);
-                            swed.WriteUInt(forceJump, pJump); // +jump
-                        }
-                        else
-                        {
-                            swed.WriteUInt(forceJump, mJump); // -jump
-                        }
-                    }
-                }
-                catch (Exception)
-                {
-                    // Silently handle exceptions
-                }
-
-                Thread.Sleep(5);
+                statusMessage = message;
+                statusMessageColor = color;
+                statusMessageTimer = 5.0f; // Show message for 5 seconds
+                showStatusMessage = true;
             }
-        }
 
-        // FOV changer thread
-        static void FovChangerThread(Renderer renderer)
-        {
-            Swed swed = new Swed("cs2");
-            IntPtr client = swed.GetModuleBase("client.dll");
-
-            // Camera offsets
-            int m_pCameraServices = 0x11E0;
-            int m_iFOV = 0x210;
-            int m_bIsScoped = 0x23E8;
-
-            while (true)
+            private void DrawOverlay()
             {
-                try
                 {
-                    if (!renderer.fovChangerEnabled)
+                    // Draw FOV circle if aimbot is enabled
+                    if (aimbotEnabled)
                     {
-                        Thread.Sleep(100);
-                        continue;
+                        Vector2 center = new Vector2(screenSize.X / 2, screenSize.Y / 2);
+                        ImGui.GetBackgroundDrawList().AddCircle(center, FOV, ImGui.ColorConvertFloat4ToU32(circleColor), 100, 1.0f);
                     }
 
-                    uint desiredFov = (uint)renderer.fovValue;
+                    // Draw welcome text in top right corner
+                    float padding = 10.0f;
+                    float textPositionX = screenSize.X - 350 - padding; // Adjust as needed
+                    float textPositionY = padding;
+                    float lineHeight = 20.0f;
 
-                    IntPtr localPlayerPawn = swed.ReadPointer(client, Offsets.dwLocalPlayerPawn);
-                    IntPtr cameraServices = swed.ReadPointer(localPlayerPawn, m_pCameraServices);
-                    uint currentFov = swed.ReadUInt(cameraServices + m_iFOV);
-                    bool isScoped = swed.ReadBool(localPlayerPawn, m_bIsScoped);
+                    // Welcome message
+                    ImGui.GetBackgroundDrawList().AddText(
+                        new Vector2(textPositionX, textPositionY),
+                        ImGui.ColorConvertFloat4ToU32(whiteTextColor),
+                        "hExternal Welcome, hounds");
 
-                    // Update FOV if not scoped and different from desired
-                    if (!isScoped && currentFov != desiredFov)
-                    {
-                        swed.WriteUInt(cameraServices + m_iFOV, desiredFov);
-                    }
+                    // Current date and time
+                    string currentDateTime = DateTime.Now.ToString("MM/dd/yyyy hh:mm:ss tt");
+                    ImGui.GetBackgroundDrawList().AddText(
+                        new Vector2(textPositionX, textPositionY + lineHeight),
+                        ImGui.ColorConvertFloat4ToU32(whiteTextColor),
+                        currentDateTime);
+
+                    // Build date
+                    ImGui.GetBackgroundDrawList().AddText(
+                        new Vector2(textPositionX, textPositionY + lineHeight * 2),
+                        ImGui.ColorConvertFloat4ToU32(whiteTextColor),
+                        "Build Date: 3/10/2025 7:32 PM");
                 }
-                catch (Exception)
-                {
-                    // Silently handle exceptions
-                }
-
-                Thread.Sleep(10);
             }
         }
-
-        // Trigger bot thread
-        static void TriggerBotThread(Renderer renderer)
-        {
-            Swed swed = new Swed("cs2");
-            IntPtr client = swed.GetModuleBase("client.dll");
-
-            // Attack offset
-            IntPtr Attack = client + 0x1883720; // dwForceAttack
-            const int TRIGGER_KEY = 0x06; // Mouse 4 for trigger bot
-
-            while (true)
-            {
-                try
-                {
-                    if (!renderer.triggerBotEnabled)
-                    {
-                        Thread.Sleep(100);
-                        continue;
-                    }
-
-                    IntPtr localPlayerPawn = swed.ReadPointer(client, Offsets.dwLocalPlayerPawn);
-                    int entIndex = swed.ReadInt(localPlayerPawn, 0x1458); // Crosshair ID
-
-                    // Activate trigger bot when key pressed and entity in crosshair
-                    if (GetAsyncKeyState(TRIGGER_KEY) < 0 && entIndex > 0)
-                    {
-                        swed.WriteInt(Attack, 65537); // +attack
-                        Thread.Sleep(1);
-                        swed.WriteInt(Attack, 256); // -attack
-                    }
-                }
-                catch (Exception)
-                {
-                    // Silently handle exceptions
-                }
-
-                Thread.Sleep(1);
-            }
-        }
-
-        // New SkinChanger thread
-        static void SkinChangerThread(Renderer renderer)
-        {
-            Swed swed = new Swed("cs2");
-            IntPtr client = swed.GetModuleBase("client.dll");
-
-            // Inventory and item related offsets - these would need to be updated
-            // This is just a placeholder for the thread to be added
-            while (true)
-            {
-                try
-                {
-                    if (!renderer.skinChangerEnabled)
-                    {
-                        Thread.Sleep(100);
-                        continue;
-                    }
-
-                    // SkinChanger logic would go here
-                    // You'd need to implement the actual skin changing functionality based on the
-                    // renderer.selectedSkin, renderer.selectedWeapon, renderer.skinWear, etc.
-
-                }
-                catch (Exception)
-                {
-                    // Silently handle exceptions
-                }
-
-                Thread.Sleep(100);
-            }
-        }
-    }
-
-    // ImGui overlay renderer
-    public class Renderer : Overlay
-    {
-        // Settings
-        public bool aimbotEnabled = false;
-        public bool aimOnTeam = false;
-        public float FOV = 50f;
-        public Vector4 circleColor = new Vector4(1, 1, 1, 1);
-
-        public bool triggerBotEnabled = false;
-        public bool bunnyhopEnabled = false;
-        public bool fovChangerEnabled = false;
-        public int fovValue = 110;
-
-        // Skin Changer settings
-        public bool skinChangerEnabled = false;
-        public bool skinChangerOptionsOpen = false;
-        public int selectedSkin = 0;
-        public int selectedWeapon = 0;
-        public float skinWear = 0.01f;
-        public int skinStatTrak = -1;
-        public bool skinApplyAll = false;
-
-        public Vector2 screenSize = new Vector2(1920, 1080);
-
-        // Changed colors back to green for "RUNNING" and orange for "VAC STATUS"
-        private Vector4 greenColor = new Vector4(0, 1, 0, 1);       // Green for "RUNNING"
-        private Vector4 orangeTextColor = new Vector4(1, 0.5f, 0, 1); // Orange for "VAC STATUS"
-        private Vector4 whiteTextColor = new Vector4(1, 1, 1, 1);    // White text for UI elements
-
-        // Weapon and skin data for dropdowns
-        private string[] weapons = { "AK-47", "M4A4", "M4A1-S", "AWP", "Desert Eagle", "USP-S", "Glock-18", "P250" };
-        private string[] skins = { "Asiimov", "Dragon Lore", "Hyper Beast", "Neo-Noir", "Fade", "Doppler", "Marble Fade", "Slaughter" };
-
-        protected override void Render()
-        {
-            screenSize = ImGui.GetIO().DisplaySize;
-
-            // Set ImGui style colors
-            ImGuiStylePtr style = ImGui.GetStyle();
-            style.Colors[(int)ImGuiCol.TitleBgActive] = new Vector4(0.8f, 0.1f, 0.1f, 1.0f);  // Red title bar
-            style.Colors[(int)ImGuiCol.Button] = new Vector4(0.7f, 0.1f, 0.1f, 1.0f);         // Red buttons
-            style.Colors[(int)ImGuiCol.ButtonHovered] = new Vector4(0.9f, 0.2f, 0.2f, 1.0f);  // Lighter red when hovered
-            style.Colors[(int)ImGuiCol.ButtonActive] = new Vector4(0.6f, 0.1f, 0.1f, 1.0f);   // Darker red when active
-            style.Colors[(int)ImGuiCol.FrameBg] = new Vector4(0.7f, 0.1f, 0.1f, 0.5f);        // Red frame background
-            style.Colors[(int)ImGuiCol.FrameBgHovered] = new Vector4(0.8f, 0.2f, 0.2f, 0.7f); // Lighter red when hovered
-            style.Colors[(int)ImGuiCol.FrameBgActive] = new Vector4(0.9f, 0.3f, 0.3f, 0.9f);  // Even lighter red when active
-            style.Colors[(int)ImGuiCol.CheckMark] = new Vector4(1.0f, 1.0f, 1.0f, 1.0f);      // White checkmark
-            style.Colors[(int)ImGuiCol.SliderGrab] = new Vector4(0.8f, 0.1f, 0.1f, 1.0f);     // Red slider
-            style.Colors[(int)ImGuiCol.SliderGrabActive] = new Vector4(0.9f, 0.2f, 0.2f, 1.0f); // Lighter red slider when active
-            style.Colors[(int)ImGuiCol.Header] = new Vector4(0.7f, 0.1f, 0.1f, 0.9f);         // Red header
-            style.Colors[(int)ImGuiCol.HeaderHovered] = new Vector4(0.8f, 0.2f, 0.2f, 0.9f);  // Lighter red header when hovered
-            style.Colors[(int)ImGuiCol.HeaderActive] = new Vector4(0.9f, 0.3f, 0.3f, 0.9f);   // Even lighter red header when active
-            style.Colors[(int)ImGuiCol.Text] = whiteTextColor;                                // Changed to white text for all elements
-
-            // Main window
-            ImGui.Begin("hExternal");
-
-            if (ImGui.CollapsingHeader("Aimbot", ImGuiTreeNodeFlags.DefaultOpen))
-            {
-                ImGui.Checkbox("Enable Aimbot", ref aimbotEnabled);
-                ImGui.Checkbox("Aim on teammates", ref aimOnTeam);
-                ImGui.SliderFloat("FOV", ref FOV, 10, 300);
-                ImGui.Text("Activation: Mouse 5 (Side button)");
-
-                if (ImGui.CollapsingHeader("FOV Circle Color"))
-                {
-                    ImGui.ColorPicker4("##CircleColor", ref circleColor);
-                }
-            }
-
-            if (ImGui.CollapsingHeader("Trigger Bot", ImGuiTreeNodeFlags.DefaultOpen))
-            {
-                ImGui.Checkbox("Enable Trigger Bot", ref triggerBotEnabled);
-                ImGui.Text("Activation: Mouse 4 (Side button)");
-            }
-
-            if (ImGui.CollapsingHeader("Bunny Hop", ImGuiTreeNodeFlags.DefaultOpen))
-            {
-                ImGui.Checkbox("Enable Bunny Hop", ref bunnyhopEnabled);
-                ImGui.Text("Activation: Spacebar");
-            }
-
-            if (ImGui.CollapsingHeader("FOV Changer", ImGuiTreeNodeFlags.DefaultOpen))
-            {
-                ImGui.Checkbox("Enable FOV Changer", ref fovChangerEnabled);
-                ImGui.SliderInt("FOV Value", ref fovValue, 60, 140);
-            }
-
-            // Add SkinChanger section
-            if (ImGui.CollapsingHeader("Skin Changer", ImGuiTreeNodeFlags.DefaultOpen))
-            {
-                ImGui.Checkbox("Enable Skin Changer (NOT IMPLIMENTED)", ref skinChangerEnabled);
-
-                if (ImGui.Button("Skin Changer Options (NOT IMPLIMENTED)"))
-                {
-                    skinChangerOptionsOpen = true;
-                }
-            }
-
-            // Add spacing before status text
-            ImGui.Spacing();
-            ImGui.Separator();
-            ImGui.Spacing();
-
-            // Changed status text colors
-            ImGui.TextColored(greenColor, "STATUS: RUNNING");
-            ImGui.SameLine();
-            ImGui.TextColored(orangeTextColor, "VAC STATUS: UNTESTED");
-
-            ImGui.End();
-
-            // Draw SkinChanger window if open
-            if (skinChangerOptionsOpen)
-            {
-                DrawSkinChangerWindow();
-            }
-
-            // Draw FOV circle and welcome message overlay
-            DrawOverlay();
-        }
-
-        void DrawSkinChangerWindow()
-        {
-            ImGui.SetNextWindowSize(new Vector2(400, 450), ImGuiCond.FirstUseEver);
-            if (ImGui.Begin("SkinChanger", ref skinChangerOptionsOpen))
-            {
-                // Weapon selection
-                ImGui.Text("Select Weapon:");
-                ImGui.Combo("##Weapon", ref selectedWeapon, weapons, weapons.Length);
-
-                ImGui.Spacing();
-                ImGui.Separator();
-                ImGui.Spacing();
-
-                // Skin selection
-                ImGui.Text("Select Skin:");
-                ImGui.Combo("##Skin", ref selectedSkin, skins, skins.Length);
-
-                ImGui.Spacing();
-
-                // Skin wear slider
-                ImGui.Text("Skin Wear:");
-                ImGui.SliderFloat("##Wear", ref skinWear, 0.0f, 1.0f, "%.2f");
-
-                ImGui.SameLine();
-
-                if (ImGui.Button("Factory New"))
-                    skinWear = 0.01f;
-
-                ImGui.SameLine();
-
-                if (ImGui.Button("BS"))
-                    skinWear = 0.9f;
-
-                ImGui.Spacing();
-
-                // StatTrak counter
-                ImGui.Text("StatTrak™ Counter:");
-                ImGui.SliderInt("##StatTrak", ref skinStatTrak, -1, 9999, skinStatTrak == -1 ? "Disabled" : "%d kills");
-
-                ImGui.Spacing();
-                ImGui.Separator();
-                ImGui.Spacing();
-
-                // Additional options
-                ImGui.Checkbox("Apply To All Weapons", ref skinApplyAll);
-
-                ImGui.Spacing();
-                ImGui.Spacing();
-
-                // Buttons row
-                float windowWidth = ImGui.GetWindowWidth();
-                float buttonsWidth = 300;
-                float buttonsPosX = (windowWidth - buttonsWidth) * 0.5f;
-
-                ImGui.SetCursorPosX(buttonsPosX);
-
-                if (ImGui.Button("Apply Changes", new Vector2(150, 30)))
-                {
-                    // Would connect to skin changer function
-                    // SkinChangerApply();
-                }
-
-                ImGui.SameLine();
-
-                if (ImGui.Button("Reset All", new Vector2(150, 30)))
-                {
-                    // Would reset all skins
-                    // SkinChangerReset();
-                }
-
-                ImGui.Spacing();
-                ImGui.Spacing();
-
-                // Status display at bottom
-                ImGui.TextColored(
-                    skinChangerEnabled ? greenColor : orangeTextColor,
-                    skinChangerEnabled ? "STATUS: ACTIVE" : "STATUS: DISABLED");
-
-                if (skinChangerEnabled)
-                {
-                    ImGui.Text($"Currently modifying: {weapons[selectedWeapon]} | {skins[selectedSkin]}");
-                    ImGui.Text($"Wear: {GetWearName(skinWear)} | StatTrak: {(skinStatTrak >= 0 ? skinStatTrak.ToString() : "Disabled")}");
-                }
-            }
-            ImGui.End();
-        }
-
-        string GetWearName(float wear)
-        {
-            if (wear < 0.07f) return "Factory New";
-            if (wear < 0.15f) return "Minimal Wear";
-            if (wear < 0.38f) return "Field-Tested";
-            if (wear < 0.45f) return "Well-Worn";
-            return "Battle-Scarred";
-        }
-
-        void DrawOverlay()
-        {
-            ImGui.SetNextWindowSize(screenSize);
-            ImGui.SetNextWindowPos(new Vector2(0, 0));
-            ImGui.Begin("hExternal Overlay",
-                ImGuiWindowFlags.NoDecoration |
-                ImGuiWindowFlags.NoBackground |
-                ImGuiWindowFlags.NoBringToFrontOnFocus |
-                ImGuiWindowFlags.NoMove |
-                ImGuiWindowFlags.NoInputs |
-                ImGuiWindowFlags.NoCollapse |
-                ImGuiWindowFlags.NoScrollbar |
-                ImGuiWindowFlags.NoScrollWithMouse);
-
-            ImDrawListPtr drawList = ImGui.GetWindowDrawList();
-
-            // Only draw FOV circle if aimbot is enabled
-            if (aimbotEnabled)
-            {
-                drawList.AddCircle(
-                    new Vector2(screenSize.X / 2, screenSize.Y / 2),
-                    FOV,
-                    ImGui.ColorConvertFloat4ToU32(circleColor));
-            }
-
-            // Add welcome text in top right corner
-            string welcomeText = "hExternal Welcome, Hounds";
-            float welcomeTextWidth = ImGui.CalcTextSize(welcomeText).X;
-
-            // Get current date and time
-            string dateTimeText = DateTime.Now.ToString("MM/dd/yyyy HH:mm:ss");
-            float dateTimeTextWidth = ImGui.CalcTextSize(dateTimeText).X;
-
-            // Position in top right with small padding
-            float padding = 10.0f;
-            float textX = screenSize.X - Math.Max(welcomeTextWidth, dateTimeTextWidth) - padding;
-
-            // Draw welcome text and date/time with shadow for better visibility
-            Vector4 textColor = new Vector4(1, 1, 1, 1); // White text
-            Vector4 shadowColor = new Vector4(0, 0, 0, 0.7f); // Black shadow
-
-            // Draw welcome text with shadow
-            drawList.AddText(new Vector2(textX + 1, padding + 1), ImGui.ColorConvertFloat4ToU32(shadowColor), welcomeText);
-            drawList.AddText(new Vector2(textX, padding), ImGui.ColorConvertFloat4ToU32(textColor), welcomeText);
-
-            // Draw date/time with shadow (positioned below welcome text)
-            drawList.AddText(new Vector2(textX + 1, padding + ImGui.GetTextLineHeight() + 1), ImGui.ColorConvertFloat4ToU32(shadowColor), dateTimeText);
-            drawList.AddText(new Vector2(textX, padding + ImGui.GetTextLineHeight()), ImGui.ColorConvertFloat4ToU32(textColor), dateTimeText);
-
-            ImGui.End();
-        }
-    }
-
-    // Calculation utilities
-    public static class Calculate
-    {
-        public static Vector2 CalculateAngles(Vector3 from, Vector3 to)
-        {
-            float yaw;
-            float pitch;
-
-            // Calculate yaw
-            float deltaX = to.X - from.X;
-            float deltaY = to.Y - from.Y;
-            yaw = (float)(Math.Atan2(deltaY, deltaX) * 180 / Math.PI);
-
-            // Calculate pitch
-            float deltaZ = to.Z - from.Z;
-            double distance = Math.Sqrt(Math.Pow(deltaY, 2) + Math.Pow(deltaX, 2));
-            pitch = -(float)(Math.Atan2(deltaZ, distance) * 180 / Math.PI);
-
-            return new Vector2(yaw, pitch);
-        }
-
-        public static Vector2 WorldToScreen(ViewMatrix matrix, Vector3 pos, int width, int height)
-        {
-            Vector2 screenCoordinates = new Vector2();
-
-            // Screen width
-            float screenW = (matrix.m41 * pos.X) + (matrix.m42 * pos.Y) + (matrix.m43 * pos.Z) + matrix.m44;
-
-            if (screenW > 0.001f)
-            {
-                // Screen x and y values
-                float screenX = (matrix.m11 * pos.X) + (matrix.m12 * pos.Y) + (matrix.m13 * pos.Z) + matrix.m14;
-                float screenY = (matrix.m21 * pos.X) + (matrix.m22 * pos.Y) + (matrix.m23 * pos.Z) + matrix.m24;
-
-                // Center camera
-                float camX = width / 2;
-                float camY = height / 2;
-
-                // Handle perspective division
-                float X = camX + (camX * screenX / screenW);
-                float Y = camY - (camY * screenY / screenW);
-
-                // Return coordinates
-                screenCoordinates.X = X;
-                screenCoordinates.Y = Y;
-                return screenCoordinates;
-            }
-            else
-            {
-                // Out of range
-                return new Vector2(-99, -99);
-            }
-        }
-    }
-
-    // Entity class
-    public class Entity
-    {
-        public IntPtr pawnAddress { get; set; }
-        public IntPtr controllerAddress { get; set; }
-        public Vector3 origin { get; set; }
-        public Vector3 view { get; set; }
-        public Vector3 head { get; set; }
-        public Vector2 head2d { get; set; }
-        public int health { get; set; }
-        public int team { get; set; }
-        public uint lifeState { get; set; }
-        public float distance { get; set; }
-        public float pixelDistance { get; set; }
-    }
-
-    // Memory offsets
-    public static class Offsets
-    {
-        // Main offsets
-        public static int dwViewAngles = 0x1AACA70;
-        public static int dwLocalPlayerPawn = 0x188AF20;
-        public static int dwEntityList = 0x1A36A00;
-        public static int dwViewMatrix = 0x1AA27F0;
-
-        // Entity offsets
-        public static int m_hPlayerPawn = 0x80C;
-        public static int m_iHealth = 0x344;
-        public static int m_vOldOrigin = 0x1324;
-        public static int m_iTeamNum = 0x3E3;
-        public static int m_vecViewOffset = 0xCB0;
-        public static int m_lifeState = 0x348;
-        public static int m_pGameSceneNode = 0x328;
-    }
-
-    // View matrix class
-    public class ViewMatrix
-    {
-        public float m11, m12, m13, m14;
-        public float m21, m22, m23, m24;
-        public float m31, m32, m33, m34;
-        public float m41, m42, m43, m44;
     }
 }

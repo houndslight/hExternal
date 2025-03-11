@@ -6,10 +6,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <PlatformTarget>x64</PlatformTarget>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="BootstrapBlazor" Version="9.4.8" />
     <PackageReference Include="ClickableTransparentOverlay" Version="9.1.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="8.0.0" />
     <PackageReference Include="swed64" Version="1.0.5" />
   </ItemGroup>
 
